@@ -1,10 +1,13 @@
 import numpy as np
+import pandas as pd
 import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 from scipy.fft import fft
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
+from scipy.stats import norm
+from scipy.optimize import brentq
 
 
 class Valuation:
@@ -128,22 +131,25 @@ class Calibration(Valuation):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def calibrate_to_market(self, clean_options_df, initial_guess, bounds, q=0.008):
+    def calibrate_to_market(self, clean_options_df, initial_guess, bounds, q=0.008, weight_type="relative"):
         """
-        Calibrate Bates model parameters to both call and put market prices.
+        Jointly calibrate Bates model parameters to calls and puts across multiple maturities.
 
         Args:
-            clean_options_df (pd.DataFrame): Must contain 'strike', 'mid', 'option_type'.
-            initial_guess (list): Initial parameter guesses.
-            bounds (list): Bounds for each parameter.
+            clean_options_df (pd.DataFrame): Must contain 'strike', 'mid', 'option_type', 'maturity_T', 'r'.
+            initial_guess (list): Initial Bates parameters.
+            bounds (list): Bounds for optimization.
             q (float): Dividend yield.
+            weight_type (str): 'uniform' or 'relative'.
 
         Returns:
-            dict: Optimized parameters, final loss, and optimization success flag.
+            dict: Optimized parameters, final loss, success flag, and message.
         """
         strikes = clean_options_df["strike"].values
         market_prices = clean_options_df["mid"].values
         option_types = clean_options_df["option_type"].values
+        maturities = clean_options_df["maturity_T"].values
+        rates = clean_options_df["r"].values
 
         def objective(params):
             (
@@ -158,13 +164,18 @@ class Calibration(Valuation):
             ) = params
 
             model_prices = []
-            for K, opt_type in zip(strikes, option_types):
+
+            for K, opt_type, T_i, r_i in zip(strikes, option_types, maturities, rates):
                 try:
+                    # Temporarily override self.T and self.r for interpolation
+                    self.T = T_i
+                    self.r = r_i
+
                     if opt_type == "call":
                         price = self.interpolate_call_price(K)
                     elif opt_type == "put":
                         call_price = self.interpolate_call_price(K)
-                        price = call_price - self.S0 * np.exp(-q * self.T) + K * np.exp(-self.r * self.T)
+                        price = call_price - self.S0 * np.exp(-q * T_i) + K * np.exp(-r_i * T_i)
                     else:
                         price = np.nan
                 except Exception:
@@ -173,8 +184,14 @@ class Calibration(Valuation):
 
             model_prices = np.array(model_prices)
             mask = ~np.isnan(model_prices)
-            error = (model_prices[mask] - market_prices[mask]) / (market_prices[mask] + 1e-6)
-            return np.sum(error ** 2)
+            error = model_prices[mask] - market_prices[mask]
+
+            if weight_type == "relative":
+                weights = 1 / (market_prices[mask] + 1e-6)
+            else:
+                weights = np.ones_like(error)
+
+            return np.sum(weights * error**2)
 
         result = minimize(
             objective,
@@ -195,12 +212,20 @@ class Calibration(Valuation):
                 self.sigma_j,
             ) = result.x
 
+        print("\nOptimized Parameters:")
+        for name, val in zip(
+            ["v0", "kappa", "theta", "sigma", "rho", "lambda", "mu_j", "sigma_j"],
+            result.x,
+        ):
+            print(f"{name}: {val:.6f}")
+
         return {
             "optimized_params": result.x,
             "loss": result.fun,
             "success": result.success,
             "message": result.message,
         }
+
 
     def plot_calibrated_vs_market(self, clean_options_df, full_grid=False, num_strikes=100):
         """
@@ -345,6 +370,79 @@ class Calibration(Valuation):
         plt.savefig(filename)
         print(f"[Saved plot] {filename}")
 
+    def plot_implied_volatility_smile_comparison(self, clean_options_df):
+        """
+        Plot implied volatility smile: Market vs Black-Scholes vs Bates (filtered).
+
+        Args:
+            clean_options_df (pd.DataFrame): Must include 'strike', 'mid', 'option_type'.
+        """
+
+        def bs_price(S, K, T, r, sigma, q, option_type):
+            d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+            d2 = d1 - sigma * np.sqrt(T)
+            if option_type == "call":
+                return S * np.exp(-q * T) * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+            elif option_type == "put":
+                return K * np.exp(-r * T) * norm.cdf(-d2) - S * np.exp(-q * T) * norm.cdf(-d1)
+            return np.nan
+
+        def implied_vol(price, S, K, T, r, q, option_type):
+            try:
+                return brentq(
+                    lambda sigma: bs_price(S, K, T, r, sigma, q, option_type) - price,
+                    1e-4, 3.0
+                )
+            except Exception:
+                return np.nan
+
+        S0, T, r, q = self.S0, self.T, self.r, 0.008
+        strikes = clean_options_df["strike"].values
+        market_prices = clean_options_df["mid"].values
+        option_types = clean_options_df["option_type"].values
+
+        market_iv = []
+        bates_iv = []
+
+        for K, mp, opt_type in zip(strikes, market_prices, option_types):
+            # Market implied vol
+            iv_mkt = implied_vol(mp, S0, K, T, r, q, opt_type)
+            market_iv.append(iv_mkt)
+
+            # Bates model price and implied vol
+            try:
+                if opt_type == "call":
+                    model_price = self.interpolate_call_price(K)
+                else:
+                    call = self.interpolate_call_price(K)
+                    model_price = call - S0 * np.exp(-q * T) + K * np.exp(-r * T)
+                iv_bates = implied_vol(model_price, S0, K, T, r, q, opt_type)
+            except Exception:
+                iv_bates = np.nan
+
+            # Filter extreme/unrealistic Bates vols
+            if iv_bates is not None and (iv_bates < 0.05 or iv_bates > 1.2):
+                iv_bates = np.nan
+            bates_iv.append(iv_bates)
+
+        # Plot
+        plt.figure(figsize=(10, 6))
+        plt.scatter(strikes, market_iv, color='green', label="Market Implied Vol", s=25)
+        plt.plot(strikes, [0.25] * len(strikes), 'k-', label="Black-Scholes (Flat σ=25%)", linewidth=1.5)
+        plt.scatter(strikes, bates_iv, color='red', marker='x', label="Bates Implied Vol", s=35)
+
+        plt.xlabel("Strike Price (K)")
+        plt.ylabel("Implied Volatility")
+        plt.title("Implied Volatility Smile: Market vs Models")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+
+        os.makedirs("../assets", exist_ok=True)
+        filename = f"../assets/implied_vol_smile_comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        plt.savefig(filename)
+        print(f"[Saved plot] {filename}")
+
 
 
 class MonteCarloExoticPricer(Calibration):
@@ -437,6 +535,31 @@ class MonteCarloExoticPricer(Calibration):
         S_T = paths[:, -1]
         barrier_hit = (paths <= H).any(axis=1)
         return np.where(barrier_hit, S_T, np.where(S_T >= B, S_T, B))
+
+    def plot_simulated_paths(self, paths, n_paths_plot=50):
+        """
+        Plot a subset of simulated stock price paths.
+
+        Args:
+            paths (np.ndarray): Simulated paths (N_paths × N_steps + 1).
+            n_paths_plot (int): Number of paths to display (default: 50).
+        """
+        time_grid = np.linspace(0, self.T, paths.shape[1])
+
+        plt.figure(figsize=(10, 5))
+        for i in range(min(n_paths_plot, paths.shape[0])):
+            plt.plot(time_grid, paths[i], lw=0.6, alpha=0.7)
+
+        plt.title(f"Simulated Asset Price Paths (T = {self.T})")
+        plt.xlabel("Time (years)")
+        plt.ylabel("Stock Price")
+        plt.grid(True)
+        plt.tight_layout()
+
+        os.makedirs("../assets", exist_ok=True)
+        filename = f"../assets/simulated_paths_T{self.T}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        plt.savefig(filename)
+        print(f"[Saved plot] {filename}")
 
 
 class HedgingStrategy:

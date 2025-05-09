@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import os
 
 class ExogenousParamEstimation:
     @staticmethod
@@ -48,7 +49,7 @@ class ExogenousParamEstimation:
     
     def estimate_historical_dividend_yield(ticker: str, S0: float, ref_date: str) -> float:
         """
-        Estimate annualized dividend yield from trailing 1-year dividend payments.
+        Estimate dividend yield from the last up to 8 dividend payments.
 
         Args:
             ticker (str): Stock ticker symbol (e.g., "COST").
@@ -56,19 +57,39 @@ class ExogenousParamEstimation:
             ref_date (str): Reference date in 'YYYY-MM-DD' format.
 
         Returns:
-            float: Estimated dividend yield (q).
+            float: Estimated dividend yield (e.g., 0.025 = 2.5%)
         """
-        ticker_obj = yf.Ticker(ticker)
-        dividends = ticker_obj.dividends
+        ref_str = pd.to_datetime(ref_date).strftime("%Y%m%d")
+        filename = f"../data/dividends_{ticker.lower()}_{ref_str}.csv"
 
-        if dividends.empty:
-            raise ValueError("No dividend data found.")
+        # Load or fetch dividend data
+        if os.path.exists(filename):
+            print(f"[INFO] Loading dividend data from cache: {filename}")
+            dividends = pd.read_csv(filename, index_col=0).squeeze("columns")
+        else:
+            print(f"[INFO] Fetching dividend data from Yahoo Finance for {ticker}")
+            ticker_obj = yf.Ticker(ticker)
+            dividends = ticker_obj.dividends
 
-        ref_date = pd.to_datetime(ref_date)
-        one_year_ago = ref_date - pd.Timedelta(days=365)
+            if dividends.empty:
+                raise ValueError("No dividend data found.")
 
-        trailing_dividends = dividends[(dividends.index > one_year_ago) & (dividends.index <= ref_date)]
-        total_dividends = trailing_dividends.sum()
+            # Save to CSV and drop datetime complications
+            dividends = dividends.reset_index(drop=True)
+            dividends.to_csv(filename)
+            print(f"[INFO] Saved dividend data to: {filename}")
 
+        # Ensure we have a Series
+        if isinstance(dividends, pd.DataFrame):
+            dividends = dividends.iloc[:, 0]
+
+        dividends = dividends.reset_index(drop=True)
+
+        # Use last 8 payments or all available if fewer
+        N = min(8, len(dividends))
+        recent_divs = dividends.tail(N)
+        total_dividends = recent_divs.sum()
+
+        print(f"[INFO] Used last {N} dividend(s), total paid: {total_dividends:.4f} USD")
         q_est = total_dividends / S0
         return q_est
