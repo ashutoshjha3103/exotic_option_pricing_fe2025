@@ -229,37 +229,49 @@ class Calibration(Valuation):
 
     def plot_calibrated_vs_market(self, clean_options_df, full_grid=False, num_strikes=100):
         """
-        Plot model-calibrated call prices vs market prices and save the figure.
+        Plot model-calibrated call prices vs market prices (multi-maturity version).
 
         Args:
-            clean_options_df (pd.DataFrame): Filtered options with 'strike', 'mid', 'option_type'.
-            full_grid (bool): Whether to use a dense grid.
-            num_strikes (int): Number of strike points if using full grid.
+            clean_options_df (pd.DataFrame): Must include 'strike', 'mid', 'option_type', 'maturity_T', 'r'.
+            full_grid (bool): Whether to use dense strike grid.
+            num_strikes (int): Grid resolution.
         """
-        # Only plot calls to avoid mixing call and put prices visually
         call_df = clean_options_df[clean_options_df["option_type"] == "call"].copy()
         market_strikes = call_df["strike"].values
         market_prices = call_df["mid"].values
+        maturities = call_df["maturity_T"].values
+        rates = call_df["r"].values
 
         plt.figure(figsize=(10, 6))
         plt.plot(market_strikes, market_prices, 'o', label="Market Calls", color="steelblue", alpha=0.7)
 
         if full_grid:
             strike_grid = np.linspace(0.5 * self.S0, 1.5 * self.S0, num_strikes)
+            # Use average T and r to build a smooth curve (approximate)
+            avg_T = call_df["maturity_T"].mean()
+            avg_r = call_df["r"].mean()
+            self.T = avg_T
+            self.r = avg_r
+
             model_prices = []
             for K in strike_grid:
                 try:
                     model_prices.append(self.interpolate_call_price(K))
                 except Exception:
                     model_prices.append(np.nan)
+
             plt.plot(strike_grid, model_prices, 'r-', label="Bates (Calibrated)", lw=2)
         else:
+            # Point-by-point interpolation using row-specific T and r
             model_prices = []
-            for K in market_strikes:
+            for K, T_i, r_i in zip(market_strikes, maturities, rates):
                 try:
+                    self.T = T_i
+                    self.r = r_i
                     model_prices.append(self.interpolate_call_price(K))
                 except Exception:
                     model_prices.append(np.nan)
+
             plt.plot(market_strikes, model_prices, 'r*', label="Bates (Calibrated)", markersize=6)
 
         plt.xlabel("Strike Price (K)")
@@ -274,17 +286,18 @@ class Calibration(Valuation):
         plt.savefig(filename)
         print(f"[Saved plot] {filename}")
 
+
     def plot_calls_and_puts_vs_model(self, clean_options_df, q=0.008):
         """
-        Plot market call/put prices vs model prices after calibration.
+        Plot market call/put prices vs model prices after joint calibration
+        (supports multiple maturities).
 
         Args:
-            clean_options_df (pd.DataFrame): DataFrame with 'strike', 'mid', 'option_type'.
+            clean_options_df (pd.DataFrame): Must include 'strike', 'mid', 'option_type', 'maturity_T', 'r'.
             q (float): Dividend yield used in parity.
         """
-
-        call_df = clean_options_df[clean_options_df["option_type"] == "call"]
-        put_df = clean_options_df[clean_options_df["option_type"] == "put"]
+        call_df = clean_options_df[clean_options_df["option_type"] == "call"].copy()
+        put_df = clean_options_df[clean_options_df["option_type"] == "put"].copy()
 
         fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -292,24 +305,28 @@ class Calibration(Valuation):
         ax.scatter(call_df["strike"], call_df["mid"], color="blue", label="Market Calls", alpha=0.6)
         ax.scatter(put_df["strike"], put_df["mid"], color="green", label="Market Puts", alpha=0.6)
 
-        # Model data
+        # Model prices — match T and r per row
         model_calls = []
-        model_puts = []
-
-        for K in call_df["strike"]:
+        for K, T_i, r_i in zip(call_df["strike"], call_df["maturity_T"], call_df["r"]):
             try:
+                self.T = T_i
+                self.r = r_i
                 model_calls.append(self.interpolate_call_price(K))
             except Exception:
                 model_calls.append(np.nan)
 
-        for K in put_df["strike"]:
+        model_puts = []
+        for K, T_i, r_i in zip(put_df["strike"], put_df["maturity_T"], put_df["r"]):
             try:
+                self.T = T_i
+                self.r = r_i
                 call_price = self.interpolate_call_price(K)
-                put_price = call_price - self.S0 * np.exp(-q * self.T) + K * np.exp(-self.r * self.T)
+                put_price = call_price - self.S0 * np.exp(-q * T_i) + K * np.exp(-r_i * T_i)
                 model_puts.append(put_price)
             except Exception:
                 model_puts.append(np.nan)
 
+        # Plot model
         ax.plot(call_df["strike"], model_calls, 'r*', label="Model Calls")
         ax.plot(put_df["strike"], model_puts, 'm*', label="Model Puts")
 
@@ -325,27 +342,32 @@ class Calibration(Valuation):
         plt.savefig(filename)
         print(f"[Saved plot] {filename}")
 
+
     def plot_residuals(self, clean_options_df, q=0.008):
         """
         Plot pricing residuals (Model - Market) for calls and puts.
 
         Args:
-            clean_options_df (pd.DataFrame): Must contain 'strike', 'mid', 'option_type'.
-            q (float): Dividend yield (used for put-call parity).
+            clean_options_df (pd.DataFrame): Must contain 'strike', 'mid', 'option_type', 'maturity_T', 'r'.
+            q (float): Dividend yield used in put-call parity.
         """
         strikes = clean_options_df["strike"].values
         market_prices = clean_options_df["mid"].values
         option_types = clean_options_df["option_type"].values
+        maturities = clean_options_df["maturity_T"].values
+        rates = clean_options_df["r"].values
 
         model_prices = []
 
-        for K, opt_type in zip(strikes, option_types):
+        for K, opt_type, T_i, r_i in zip(strikes, option_types, maturities, rates):
             try:
+                self.T = T_i
+                self.r = r_i
                 if opt_type == "call":
                     model_price = self.interpolate_call_price(K)
                 elif opt_type == "put":
                     call_price = self.interpolate_call_price(K)
-                    model_price = call_price - self.S0 * np.exp(-q * self.T) + K * np.exp(-self.r * self.T)
+                    model_price = call_price - self.S0 * np.exp(-q * T_i) + K * np.exp(-r_i * T_i)
                 else:
                     model_price = np.nan
             except Exception:
@@ -370,14 +392,15 @@ class Calibration(Valuation):
         plt.savefig(filename)
         print(f"[Saved plot] {filename}")
 
-    def plot_implied_volatility_smile_comparison(self, clean_options_df):
+
+    def plot_implied_volatility_smile_comparison(self, clean_options_df, q=0.008):
         """
-        Plot implied volatility smile: Market vs Black-Scholes vs Bates (filtered).
+        Plot implied volatility smile per maturity: Market vs Black-Scholes vs Bates model.
 
         Args:
-            clean_options_df (pd.DataFrame): Must include 'strike', 'mid', 'option_type'.
+            clean_options_df (pd.DataFrame): Must include 'strike', 'mid', 'option_type', 'maturity_T', 'r'.
+            q (float): Dividend yield.
         """
-
         def bs_price(S, K, T, r, sigma, q, option_type):
             d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
             d2 = d1 - sigma * np.sqrt(T)
@@ -396,52 +419,57 @@ class Calibration(Valuation):
             except Exception:
                 return np.nan
 
-        S0, T, r, q = self.S0, self.T, self.r, 0.008
-        strikes = clean_options_df["strike"].values
-        market_prices = clean_options_df["mid"].values
-        option_types = clean_options_df["option_type"].values
+        for T in sorted(clean_options_df["maturity_T"].unique()):
+            subset = clean_options_df[clean_options_df["maturity_T"] == T].copy()
+            r = subset["r"].iloc[0]  # consistent within each T
 
-        market_iv = []
-        bates_iv = []
+            strikes = subset["strike"].values
+            market_prices = subset["mid"].values
+            option_types = subset["option_type"].values
 
-        for K, mp, opt_type in zip(strikes, market_prices, option_types):
-            # Market implied vol
-            iv_mkt = implied_vol(mp, S0, K, T, r, q, opt_type)
-            market_iv.append(iv_mkt)
+            market_iv = []
+            bates_iv = []
 
-            # Bates model price and implied vol
-            try:
-                if opt_type == "call":
-                    model_price = self.interpolate_call_price(K)
-                else:
-                    call = self.interpolate_call_price(K)
-                    model_price = call - S0 * np.exp(-q * T) + K * np.exp(-r * T)
-                iv_bates = implied_vol(model_price, S0, K, T, r, q, opt_type)
-            except Exception:
-                iv_bates = np.nan
+            for K, mp, opt_type in zip(strikes, market_prices, option_types):
+                # Market implied vol
+                iv_mkt = implied_vol(mp, self.S0, K, T, r, q, opt_type)
+                market_iv.append(iv_mkt)
 
-            # Filter extreme/unrealistic Bates vols
-            if iv_bates is not None and (iv_bates < 0.05 or iv_bates > 1.2):
-                iv_bates = np.nan
-            bates_iv.append(iv_bates)
+                # Bates model implied vol
+                try:
+                    self.T = T
+                    self.r = r
+                    if opt_type == "call":
+                        model_price = self.interpolate_call_price(K)
+                    else:
+                        call = self.interpolate_call_price(K)
+                        model_price = call - self.S0 * np.exp(-q * T) + K * np.exp(-r * T)
+                    iv_bates = implied_vol(model_price, self.S0, K, T, r, q, opt_type)
+                except Exception:
+                    iv_bates = np.nan
 
-        # Plot
-        plt.figure(figsize=(10, 6))
-        plt.scatter(strikes, market_iv, color='green', label="Market Implied Vol", s=25)
-        plt.plot(strikes, [0.25] * len(strikes), 'k-', label="Black-Scholes (Flat σ=25%)", linewidth=1.5)
-        plt.scatter(strikes, bates_iv, color='red', marker='x', label="Bates Implied Vol", s=35)
+                # Filter extreme/unrealistic vols
+                if iv_bates is not None and (iv_bates < 0.05 or iv_bates > 1.2):
+                    iv_bates = np.nan
+                bates_iv.append(iv_bates)
 
-        plt.xlabel("Strike Price (K)")
-        plt.ylabel("Implied Volatility")
-        plt.title("Implied Volatility Smile: Market vs Models")
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
+            # Plot per maturity
+            plt.figure(figsize=(10, 6))
+            plt.scatter(strikes, market_iv, color='green', label="Market Implied Vol", s=25)
+            plt.plot(strikes, [0.25] * len(strikes), 'k--', label="Black-Scholes (σ=25%)")
+            plt.scatter(strikes, bates_iv, color='red', marker='x', label="Bates Implied Vol", s=35)
 
-        os.makedirs("../assets", exist_ok=True)
-        filename = f"../assets/implied_vol_smile_comparison_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-        plt.savefig(filename)
-        print(f"[Saved plot] {filename}")
+            plt.xlabel("Strike Price (K)")
+            plt.ylabel("Implied Volatility")
+            plt.title(f"Volatility Smile (T = {T:.2f} years)")
+            plt.grid(True)
+            plt.legend()
+            plt.tight_layout()
+
+            os.makedirs("../assets", exist_ok=True)
+            filename = f"../assets/iv_smile_comparison_T{int(T*100):03d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            plt.savefig(filename)
+            print(f"[Saved plot] {filename}")
 
 
 
@@ -557,7 +585,7 @@ class MonteCarloExoticPricer(Calibration):
         plt.tight_layout()
 
         os.makedirs("../assets", exist_ok=True)
-        filename = f"../assets/simulated_paths_T{self.T}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        filename = f"../assets/simulated_paths_T{self.T}_{datetime.now().strftime('%Y%m%d')}.png"
         plt.savefig(filename)
         print(f"[Saved plot] {filename}")
 
