@@ -125,6 +125,24 @@ class Valuation:
         strikes, prices = self.carr_madan_price()
         interpolator = interp1d(strikes, prices, kind="cubic", bounds_error=True)
         return interpolator(K_target)
+    
+    def interpolate_put_price(self, K_target, q=0.008):
+        """
+        Interpolate put price for a given strike using Carr-Madan FFT output and put-call parity.
+
+        Args:
+            K_target (float): Target strike price.
+            q (float): Dividend yield.
+
+        Returns:
+            float: Interpolated put price.
+        """
+        strikes, call_prices = self.carr_madan_price()
+        puts = call_prices - self.S0 * np.exp(-q * self.T) + strikes * np.exp(-self.r * self.T)
+
+        interpolator = interp1d(strikes, puts, kind="cubic", bounds_error=True)
+        return interpolator(K_target)
+
 
 
 class Calibration(Valuation):
@@ -174,8 +192,7 @@ class Calibration(Valuation):
                     if opt_type == "call":
                         price = self.interpolate_call_price(K)
                     elif opt_type == "put":
-                        call_price = self.interpolate_call_price(K)
-                        price = call_price - self.S0 * np.exp(-q * T_i) + K * np.exp(-r_i * T_i)
+                        price = self.interpolate_put_price(K, q=q)
                     else:
                         price = np.nan
                 except Exception:
