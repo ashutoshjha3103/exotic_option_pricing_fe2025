@@ -203,12 +203,27 @@ class Calibration(Valuation):
             mask = ~np.isnan(model_prices)
             error = model_prices[mask] - market_prices[mask]
 
-            if weight_type == "relative":
-                weights = 1 / (market_prices[mask] + 1e-6)
-            else:
-                weights = np.ones_like(error)
+            # Default uniform weights
+            weights = np.ones_like(error)
 
-            return np.sum(weights * error**2)
+            # Weighted schemes
+            if weight_type == "relative":
+                weights = 1 / (np.clip(market_prices[mask], 1e-3, np.inf))
+            elif weight_type == "otm_put_focus":
+                strikes_masked = strikes[mask]
+                option_types_masked = option_types[mask]
+                for i, (K, opt_type) in enumerate(zip(strikes_masked, option_types_masked)):
+                    if opt_type == "put" and K < 0.9 * self.S0:
+                        weights[i] *= 2.0  # Emphasize deep OTM puts
+
+            # Compute loss
+            loss = np.sum(weights * error**2)
+
+            # Guard against invalid outputs
+            if not np.isfinite(loss):
+                return 1e10  # penalize invalid regions
+
+            return loss
 
         result = minimize(
             objective,
@@ -466,8 +481,8 @@ class Calibration(Valuation):
                     iv_bates = np.nan
 
                 # Filter extreme/unrealistic vols
-                if iv_bates is not None and (iv_bates < 0.05 or iv_bates > 1.2):
-                    iv_bates = np.nan
+                #if iv_bates is not None and (iv_bates < 0.05 or iv_bates > 1.2):
+                #    iv_bates = np.nan
                 bates_iv.append(iv_bates)
 
             # Plot per maturity
