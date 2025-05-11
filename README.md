@@ -32,7 +32,11 @@ This project prices and hedges a Bonus Certificate structured product on **Costc
 
    Payoff histogram:
 
-   ![Payoff Histogram](./assets/simulated_paths_T0.25_20250511.png)
+   ![Payoff Histogram](./assets/bc_histogram.png)
+
+   Payoff histogram:
+
+   ![Bonus Certificate SImulated Paths](./assets/simulated_paths_T0.25_20250511.png)
 
 5. **Initial Hedging Strategy**
    Using finite difference delta:
