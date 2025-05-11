@@ -47,9 +47,10 @@ class ExogenousParamEstimation:
 
         return result
     
+    @staticmethod
     def estimate_historical_dividend_yield(ticker: str, S0: float, ref_date: str) -> float:
         """
-        Estimate dividend yield from the last up to 8 dividend payments.
+        Estimate forward dividend yield using the last 4 regular dividend payments.
 
         Args:
             ticker (str): Stock ticker symbol (e.g., "COST").
@@ -57,12 +58,11 @@ class ExogenousParamEstimation:
             ref_date (str): Reference date in 'YYYY-MM-DD' format.
 
         Returns:
-            float: Estimated dividend yield (e.g., 0.025 = 2.5%)
+            float: Estimated dividend yield (e.g., 0.012 = 1.2%)
         """
         ref_str = pd.to_datetime(ref_date).strftime("%Y%m%d")
         filename = f"../data/dividends_{ticker.lower()}_{ref_str}.csv"
 
-        # Load or fetch dividend data
         if os.path.exists(filename):
             print(f"[INFO] Loading dividend data from cache: {filename}")
             dividends = pd.read_csv(filename, index_col=0).squeeze("columns")
@@ -74,22 +74,28 @@ class ExogenousParamEstimation:
             if dividends.empty:
                 raise ValueError("No dividend data found.")
 
-            # Save to CSV and drop datetime complications
-            dividends = dividends.reset_index(drop=True)
             dividends.to_csv(filename)
             print(f"[INFO] Saved dividend data to: {filename}")
 
-        # Ensure we have a Series
+        # Ensure it's a Series and clean it
         if isinstance(dividends, pd.DataFrame):
             dividends = dividends.iloc[:, 0]
 
-        dividends = dividends.reset_index(drop=True)
+        dividends = dividends.sort_index(ascending=False)
+        dividends = dividends[dividends > 0]  # Filter zero or erroneous dividends
 
-        # Use last 8 payments or all available if fewer
-        N = min(8, len(dividends))
-        recent_divs = dividends.tail(N)
-        total_dividends = recent_divs.sum()
+        # Try to exclude special dividends by threshold (e.g., > $5 for COST)
+        regular_divs = dividends[dividends < 5.0]  # Adjust threshold as needed
 
-        print(f"[INFO] Used last {N} dividend(s), total paid: {total_dividends:.4f} USD")
-        q_est = total_dividends / S0
+        # Use last 4 regular payments to estimate forward yield
+        N = min(4, len(regular_divs))
+        if N == 0:
+            raise ValueError("No regular dividend payments found.")
+
+        recent_divs = regular_divs.iloc[:N]
+        avg_div = recent_divs.mean()
+        annualized_div = avg_div * 4  # Assuming quarterly dividends
+
+        print(f"[INFO] Used {N} regular dividend(s), annualized estimate: {annualized_div:.4f} USD")
+        q_est = annualized_div / S0
         return q_est

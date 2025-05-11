@@ -10,7 +10,7 @@ This project prices and hedges a Bonus Certificate structured product on **Costc
    Raw options data was filtered using butterfly and put-call parity checks to remove arbitrage violations.
 
 2. **Parameter Estimation**  
-   - Dividend yield estimated from past dividends: **q = 2.41%**
+   - Dividend yield estimated from past dividends: **q = 0.43%%**
    - Risk-free rate from Treasury data for T = 0.25: **r = 4.22%**
 
 3. **Model Calibration**
@@ -20,7 +20,7 @@ This project prices and hedges a Bonus Certificate structured product on **Costc
 
    Final 3-month smile fit:
 
-   ![Smile](./assets/iv_smile_comparison_T025_20250511_141244.png)
+   ![Smile](./assets/iv_smile_comparison_T025_20250511_181809.png)
 
 4. **Exotic Pricing**  
    A grid of bonus (B) and barrier (H) levels were simulated using **Monte Carlo** with variance truncation:
