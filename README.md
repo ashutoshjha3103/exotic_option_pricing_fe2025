@@ -18,6 +18,10 @@ This project prices and hedges a Bonus Certificate structured product on **Costc
    - 3-month fine-tuning with adjusted short-term parameters
    - Final loss (3m): **202.85**
 
+   Final 3-month Pricing Model:
+
+   ![OptionPrices](./assets/calls_puts_vs_model_20250511_181801.png)
+
    Final 3-month smile fit:
 
    ![Smile](./assets/iv_smile_comparison_T025_20250511_181809.png)
